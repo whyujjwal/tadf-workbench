@@ -7,6 +7,8 @@ reference atom on each side, around the rotatable bond axis.
 """
 from __future__ import annotations
 
+from collections import Counter
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
@@ -76,6 +78,102 @@ def split_at_bond(stage: Stage, atom_a: int, atom_b: int,
             "cutting it does not split the molecule"
         )
     return side_a, side_b
+
+
+# ── Auto-detected rotatable-bond candidates ──────────────────────────────────
+
+
+@dataclass(frozen=True)
+class RotatableBondCandidate:
+    """A bond worth offering the user as a possible donor/acceptor split.
+
+    `larger_side` is the bigger fragment — useful for sorting so the most
+    "split-y" bonds bubble to the top of a UI list.
+    """
+    atom_a: int
+    atom_b: int
+    side_a: Set[int]
+    side_b: Set[int]
+    formula_a: str
+    formula_b: str
+
+    @property
+    def larger_side_size(self) -> int:
+        return max(len(self.side_a), len(self.side_b))
+
+    @property
+    def smaller_side_size(self) -> int:
+        return min(len(self.side_a), len(self.side_b))
+
+    def label(self, stage: Stage) -> str:
+        sym_a = _element_symbol(stage.atoms[self.atom_a].atomic_number)
+        sym_b = _element_symbol(stage.atoms[self.atom_b].atomic_number)
+        return (
+            f"{sym_a}{self.atom_a} — {sym_b}{self.atom_b}   "
+            f"[{len(self.side_a)} vs {len(self.side_b)} atoms]   "
+            f"{self.formula_a}  /  {self.formula_b}"
+        )
+
+
+def _element_symbol(z: int) -> str:
+    # Avoid a circular import by inlining a tiny lookup for the common ones.
+    from ..utils import get_element_symbol
+    return get_element_symbol(z)
+
+
+def _formula(stage: Stage, indices: Set[int]) -> str:
+    counts = Counter(_element_symbol(stage.atoms[i].atomic_number) for i in indices)
+    order = ["C", "H"] + sorted(k for k in counts if k not in ("C", "H"))
+    return "".join(f"{el}{counts[el]}" for el in order if el in counts)
+
+
+def find_rotatable_bond_candidates(
+    stage: Stage, *, tolerance: float = 0.3,
+    skip_hydrogen: bool = True, min_side_size: int = 2,
+) -> List[RotatableBondCandidate]:
+    """Return all bonds whose cut splits the molecule into two real fragments.
+
+    A "rotatable" single bond satisfies all of:
+      - it actually exists in the bond graph
+      - cutting it disconnects the molecule (i.e., not part of any ring)
+      - neither atom is hydrogen (terminal H rotation is meaningless),
+        when `skip_hydrogen=True`
+      - both resulting fragments contain at least `min_side_size` atoms
+        (filters out bonds to terminal -CH₃, -OH, etc.)
+
+    Sorted by the smaller-side size descending — bonds that cut the molecule
+    near the middle (real donor/acceptor candidates) bubble to the top.
+    """
+    if stage is None or stage.atom_count == 0:
+        return []
+
+    candidates: List[RotatableBondCandidate] = []
+    bonds = stage.find_bonds(tolerance=tolerance)
+    for i, j in bonds:
+        if skip_hydrogen and (
+            stage.atoms[i].atomic_number == 1 or stage.atoms[j].atomic_number == 1
+        ):
+            continue
+        try:
+            side_a, side_b = split_at_bond(stage, i, j, tolerance=tolerance)
+        except BondNotRotatableError:
+            continue
+        if min(len(side_a), len(side_b)) < min_side_size:
+            continue
+        candidates.append(RotatableBondCandidate(
+            atom_a=i, atom_b=j,
+            side_a=side_a, side_b=side_b,
+            formula_a=_formula(stage, side_a),
+            formula_b=_formula(stage, side_b),
+        ))
+
+    # Best candidates first: most balanced split → most likely the "real"
+    # donor/acceptor bond. Ties broken by total fragment size.
+    candidates.sort(
+        key=lambda c: (c.smaller_side_size, len(c.side_a) + len(c.side_b)),
+        reverse=True,
+    )
+    return candidates
 
 
 # ── Reference-atom picking for dihedral ───────────────────────────────────────

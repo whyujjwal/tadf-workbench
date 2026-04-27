@@ -9,9 +9,10 @@ from typing import Optional
 import numpy as np
 import pyqtgraph.opengl as gl
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QVector3D
+from PyQt5.QtGui import QColor, QFont, QVector3D
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QFrame, QSizePolicy,
+    QCheckBox, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QFrame,
+    QSizePolicy,
 )
 
 from ..core import AngleScan, AnglePoint, Stage
@@ -44,6 +45,7 @@ class Dihedral3DPanel(QWidget):
         self._camera_fitted = False
         self._show_planes = True
         self._show_arc = True
+        self._show_atom_numbers = False
         self._build_ui()
 
     def _build_ui(self):
@@ -136,6 +138,13 @@ class Dihedral3DPanel(QWidget):
         legend.addWidget(self._make_swatch("Acceptor fragment", "#ff8a65"))
         legend.addWidget(self._make_swatch("Rotatable bond", "#ffeb3b"))
         legend.addStretch()
+        self._numbers_chk = QCheckBox("Atom #")
+        self._numbers_chk.setStyleSheet(
+            "QCheckBox { color:#b5c2d1; font-size:10px; }"
+            "QCheckBox::indicator { width:12px; height:12px; }"
+        )
+        self._numbers_chk.toggled.connect(self._on_numbers_toggled)
+        legend.addWidget(self._numbers_chk)
         bar_lay.addLayout(legend)
 
         lay.addWidget(bar)
@@ -197,6 +206,11 @@ class Dihedral3DPanel(QWidget):
     def _on_slider_change(self, value: int):
         self.set_angle(float(value))
 
+    def _on_numbers_toggled(self, checked: bool):
+        self._show_atom_numbers = checked
+        if self._current is not None:
+            self._render_point(self._current)
+
     def _clear_items(self):
         for it in self._gl_items:
             self.view.removeItem(it)
@@ -218,6 +232,8 @@ class Dihedral3DPanel(QWidget):
 
         self._draw_atoms(stage, donor, accept)
         self._draw_bonds(stage, bond)
+        if self._show_atom_numbers:
+            self._draw_atom_numbers(stage)
 
         if bond is not None and donor is not None and accept is not None:
             self._draw_rotatable_axis(stage, bond)
@@ -257,6 +273,35 @@ class Dihedral3DPanel(QWidget):
             item.translate(atom.x, atom.y, atom.z)
             self.view.addItem(item)
             self._gl_items.append(item)
+
+    def _draw_atom_numbers(self, stage: Stage):
+        """Render small index labels next to each atom — toggled via checkbox.
+
+        Helps the user see which atom corresponds to which index when picking
+        the rotatable bond manually.
+        """
+        font = QFont()
+        font.setPointSize(9)
+        font.setBold(True)
+        for atom in stage.atoms:
+            radius = get_atom_radius(atom.atomic_number) * 0.55
+            offset = radius + 0.12
+            try:
+                txt = gl.GLTextItem(
+                    pos=(atom.x + offset, atom.y + offset, atom.z + offset),
+                    text=str(atom.index),
+                    color=QColor("#ffd54f"),
+                    font=font,
+                )
+            except TypeError:
+                # Older pyqtgraph: GLTextItem doesn't take font kwarg
+                txt = gl.GLTextItem(
+                    pos=(atom.x + offset, atom.y + offset, atom.z + offset),
+                    text=str(atom.index),
+                    color=QColor("#ffd54f"),
+                )
+            self.view.addItem(txt)
+            self._gl_items.append(txt)
 
     def _draw_bonds(self, stage: Stage, rotatable_bond: Optional[tuple]):
         bonds = stage.find_bonds()

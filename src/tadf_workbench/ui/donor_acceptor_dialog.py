@@ -2,19 +2,26 @@
 
 The molecule is split into two graph components by the chosen bond. The user
 sees the atom counts and elements in each fragment and can swap which side is
-the donor with one click. No need to manually pick every atom.
+the donor with one click.
+
+Primary UX: the dialog auto-detects rotatable single bonds (heavy-atom-only,
+not in any ring, with non-trivial fragments on both sides) and lists them as
+clickable candidates. For unusual molecules, an expandable "Manual selection"
+section exposes the original two-combo atom picker.
 """
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton,
-    QDialogButtonBox, QGroupBox, QFrame,
+    QDialogButtonBox, QGroupBox, QFrame, QListWidget, QListWidgetItem,
+    QToolButton, QSizePolicy, QWidget,
 )
 
 from ..core import AngleScan
 from ..core.fragments import (
     split_at_bond, BondNotRotatableError, pick_reference_atom,
+    find_rotatable_bond_candidates, RotatableBondCandidate,
 )
 from ..utils import get_element_symbol
 
@@ -46,12 +53,21 @@ class DonorAcceptorDialog(QDialog):
         self._donor_anchor: Optional[int] = None
         self._acc_anchor: Optional[int] = None
 
+        # Auto-detected candidates — populated lazily from the stage
+        self._candidates: List[RotatableBondCandidate] = (
+            find_rotatable_bond_candidates(self._stage) if self._stage else []
+        )
+
         self._build_ui()
         # Restore previous state if the scan was already configured
         if scan.rotatable_bond is not None:
             self.bond_a_cb.setCurrentIndex(scan.rotatable_bond[0] + 1)
             self.bond_b_cb.setCurrentIndex(scan.rotatable_bond[1] + 1)
             self._refresh_split()
+            self._select_candidate_matching(scan.rotatable_bond)
+        elif self._candidates:
+            # Auto-pick the top candidate so the OK button lights up immediately
+            self.candidate_list.setCurrentRow(0)
 
     # ── UI ──
 
@@ -59,17 +75,82 @@ class DonorAcceptorDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 14, 14, 12)
         lay.setSpacing(10)
+        self.setMinimumWidth(620)
 
         intro = QLabel(
-            "<b>Step 1.</b> Pick the two atoms forming the rotatable single "
-            "bond between donor and acceptor.<br>"
+            "<b>Step 1.</b> Click a rotatable-bond candidate below.<br>"
             "<b>Step 2.</b> Confirm which side is the donor (swap if wrong)."
         )
         intro.setWordWrap(True)
         intro.setStyleSheet(f"color:{_TEXT_DIM}; font-size:11px;")
         lay.addWidget(intro)
 
-        # Bond pickers
+        # ── Candidate list (auto-detected) ──
+        cand_box = QGroupBox(
+            f"Auto-detected rotatable bonds ({len(self._candidates)})"
+        )
+        cand_box.setStyleSheet(self._group_qss())
+        cv = QVBoxLayout(cand_box)
+        cv.setContentsMargins(10, 14, 10, 10)
+        cv.setSpacing(6)
+
+        self.candidate_list = QListWidget()
+        self.candidate_list.setStyleSheet(f"""
+            QListWidget {{
+                background:#1e242c; color:{_TEXT_BRIGHT};
+                border:1px solid {_BORDER}; border-radius:4px;
+                font-family: 'SF Mono', Menlo, Consolas, monospace;
+                font-size: 11px;
+            }}
+            QListWidget::item {{ padding: 4px 8px; }}
+            QListWidget::item:selected {{ background:#094771; color:white; }}
+        """)
+        self.candidate_list.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Expanding
+        )
+        if self._candidates and self._stage is not None:
+            for cand in self._candidates:
+                item = QListWidgetItem(cand.label(self._stage))
+                item.setData(Qt.UserRole, (cand.atom_a, cand.atom_b))
+                self.candidate_list.addItem(item)
+            self.candidate_list.setMaximumHeight(140)
+            cand_help = QLabel(
+                "Top of list = most balanced donor/acceptor split. "
+                "Click one to pre-fill the bond pickers below."
+            )
+        else:
+            empty = QListWidgetItem(
+                "(no rotatable bonds detected — use Manual selection below)"
+            )
+            empty.setFlags(Qt.NoItemFlags)
+            self.candidate_list.addItem(empty)
+            self.candidate_list.setMaximumHeight(60)
+            cand_help = QLabel(
+                "No rotatable bonds detected in the molecular graph. "
+                "Use the Manual selection below."
+            )
+        cand_help.setStyleSheet(f"color:{_TEXT_DIM}; font-size:10px;")
+        cand_help.setWordWrap(True)
+        self.candidate_list.itemSelectionChanged.connect(
+            self._on_candidate_selected
+        )
+        cv.addWidget(self.candidate_list)
+        cv.addWidget(cand_help)
+        lay.addWidget(cand_box)
+
+        # ── Manual selection (collapsible) ──
+        self._manual_toggle = QToolButton()
+        self._manual_toggle.setText("▸ Manual selection (advanced)")
+        self._manual_toggle.setCheckable(True)
+        self._manual_toggle.setChecked(False)
+        self._manual_toggle.setStyleSheet(
+            "QToolButton { color:#8a97a8; background:transparent; "
+            "border:none; padding:2px 0; font-size:11px; text-align:left; }"
+            "QToolButton:hover { color:#eaf2fb; }"
+        )
+        self._manual_toggle.clicked.connect(self._toggle_manual)
+        lay.addWidget(self._manual_toggle, alignment=Qt.AlignLeft)
+
         bond_box = QGroupBox("Rotatable bond (B₁ — B₂)")
         bond_box.setStyleSheet(self._group_qss())
         bb = QHBoxLayout(bond_box)
@@ -81,7 +162,9 @@ class DonorAcceptorDialog(QDialog):
         bb.addWidget(QLabel("B₂:"))
         self.bond_b_cb = self._make_atom_combo()
         bb.addWidget(self.bond_b_cb, 1)
-        lay.addWidget(bond_box)
+        self._manual_box = bond_box
+        self._manual_box.setVisible(False)
+        lay.addWidget(self._manual_box)
 
         # Result preview
         self.result_frame = QFrame()
@@ -182,6 +265,42 @@ class DonorAcceptorDialog(QDialog):
         )
 
     # ── Logic ──
+
+    def _on_candidate_selected(self):
+        items = self.candidate_list.selectedItems()
+        if not items:
+            return
+        data = items[0].data(Qt.UserRole)
+        if data is None:
+            return
+        a, b = data
+        # Drive the manual combos so the existing _refresh_split path runs.
+        self.bond_a_cb.blockSignals(True)
+        self.bond_b_cb.blockSignals(True)
+        self.bond_a_cb.setCurrentIndex(a + 1)
+        self.bond_b_cb.setCurrentIndex(b + 1)
+        self.bond_a_cb.blockSignals(False)
+        self.bond_b_cb.blockSignals(False)
+        self._refresh_split()
+
+    def _select_candidate_matching(self, bond: Tuple[int, int]):
+        """Pre-select the candidate that matches the given bond, if any."""
+        target = set(bond)
+        for row in range(self.candidate_list.count()):
+            data = self.candidate_list.item(row).data(Qt.UserRole)
+            if data is not None and set(data) == target:
+                self.candidate_list.blockSignals(True)
+                self.candidate_list.setCurrentRow(row)
+                self.candidate_list.blockSignals(False)
+                return
+
+    def _toggle_manual(self):
+        open_ = self._manual_toggle.isChecked()
+        self._manual_toggle.setText(
+            ("▾ Manual selection (advanced)" if open_
+             else "▸ Manual selection (advanced)")
+        )
+        self._manual_box.setVisible(open_)
 
     def _refresh_split(self):
         a = self.bond_a_cb.currentData()
