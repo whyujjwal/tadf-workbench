@@ -31,3 +31,7 @@ Thumbs.db
 
 # Generated demo data (re-create with: python scripts/generate_demo_scan.py)
 data/demo_scan/*.log
+
+# User research logs — keep out of git
+DFT results vasudev/
+

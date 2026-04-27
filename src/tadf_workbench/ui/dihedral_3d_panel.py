@@ -46,6 +46,7 @@ class Dihedral3DPanel(QWidget):
         self._show_planes = True
         self._show_arc = True
         self._show_atom_numbers = False
+        self._show_tdm_arrow = True
         self._build_ui()
 
     def _build_ui(self):
@@ -137,7 +138,16 @@ class Dihedral3DPanel(QWidget):
         legend.addWidget(self._make_swatch("Donor fragment", "#66bb6a"))
         legend.addWidget(self._make_swatch("Acceptor fragment", "#ff8a65"))
         legend.addWidget(self._make_swatch("Rotatable bond", "#ffeb3b"))
+        legend.addWidget(self._make_swatch("TDM(S₁) direction", "#e040fb"))
         legend.addStretch()
+        self._tdm_chk = QCheckBox("TDM arrow")
+        self._tdm_chk.setChecked(True)
+        self._tdm_chk.setStyleSheet(
+            "QCheckBox { color:#b5c2d1; font-size:10px; }"
+            "QCheckBox::indicator { width:12px; height:12px; }"
+        )
+        self._tdm_chk.toggled.connect(self._on_tdm_toggled)
+        legend.addWidget(self._tdm_chk)
         self._numbers_chk = QCheckBox("Atom #")
         self._numbers_chk.setStyleSheet(
             "QCheckBox { color:#b5c2d1; font-size:10px; }"
@@ -211,6 +221,11 @@ class Dihedral3DPanel(QWidget):
         if self._current is not None:
             self._render_point(self._current)
 
+    def _on_tdm_toggled(self, checked: bool):
+        self._show_tdm_arrow = checked
+        if self._current is not None:
+            self._render_point(self._current)
+
     def _clear_items(self):
         for it in self._gl_items:
             self.view.removeItem(it)
@@ -234,6 +249,8 @@ class Dihedral3DPanel(QWidget):
         self._draw_bonds(stage, bond)
         if self._show_atom_numbers:
             self._draw_atom_numbers(stage)
+        if self._show_tdm_arrow:
+            self._draw_tdm_arrow(stage, point)
 
         if bond is not None and donor is not None and accept is not None:
             self._draw_rotatable_axis(stage, bond)
@@ -273,6 +290,97 @@ class Dihedral3DPanel(QWidget):
             item.translate(atom.x, atom.y, atom.z)
             self.view.addItem(item)
             self._gl_items.append(item)
+
+    def _draw_tdm_arrow(self, stage: Stage, point: AnglePoint):
+        """Draw the S₁ transition electric dipole moment as a 3D arrow.
+
+        The arrow originates at the molecule's geometric center and points
+        along the (x, y, z) of the S₁ TransitionDipole. Length is scaled to
+        a fraction of the bounding-box diagonal so it stays visible on any
+        molecule size; magnitude is independent so the arrow is comparable
+        across angles.
+        """
+        td = point.s1_tdm
+        if td is None:
+            return
+        vec = np.array([td.x, td.y, td.z], dtype=float)
+        mag = float(np.linalg.norm(vec))
+        if mag < 1e-6:
+            return
+
+        positions = stage.positions
+        center = positions.mean(axis=0)
+        bbox = positions.max(axis=0) - positions.min(axis=0)
+        diag = float(np.linalg.norm(bbox))
+        # Length: scale magnitude into the molecule's frame, capped at the
+        # bbox diagonal so a huge TDM doesn't go off-screen.
+        length = min(diag * 0.55 * mag / max(1.0, mag), diag * 0.55)
+        if mag > 0:
+            length = diag * 0.55 * min(mag / 2.0, 1.0)
+        direction = vec / mag
+
+        start = center - direction * (length / 2.0)
+        end = center + direction * (length / 2.0)
+
+        color = (0.88, 0.25, 0.99, 1.0)  # magenta — distinct from yellow bond + green/orange fragments
+
+        # Shaft
+        shaft = gl.GLLinePlotItem(
+            pos=np.array([start, end]), color=color,
+            width=4.0, mode="lines", antialias=True,
+        )
+        self.view.addItem(shaft)
+        self._gl_items.append(shaft)
+
+        # Arrowhead — small cone made of triangles
+        head_len = max(diag * 0.08, 0.4)
+        head_radius = max(diag * 0.025, 0.15)
+        self._draw_cone_arrowhead(end, direction, head_len, head_radius, color)
+
+        # Magnitude label at the tip
+        try:
+            label = gl.GLTextItem(
+                pos=tuple((end + direction * 0.3).tolist()),
+                text=f"|TDM(S₁)| = {mag:.3f} Au",
+                color=QColor("#e040fb"),
+            )
+            self.view.addItem(label)
+            self._gl_items.append(label)
+        except Exception:
+            pass
+
+    def _draw_cone_arrowhead(self, tip: np.ndarray, direction: np.ndarray,
+                             length: float, radius: float, color: tuple):
+        """Cone-shaped arrowhead at `tip` pointing along `direction`."""
+        # Build orthonormal basis (u, v, w=direction)
+        w = direction / np.linalg.norm(direction)
+        ref = np.array([1.0, 0.0, 0.0]) if abs(w[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        u = ref - np.dot(ref, w) * w
+        u = u / np.linalg.norm(u)
+        v = np.cross(w, u)
+
+        base_center = tip - w * length
+        n_seg = 16
+        ring = np.array([
+            base_center + radius * (np.cos(t) * u + np.sin(t) * v)
+            for t in np.linspace(0, 2 * np.pi, n_seg, endpoint=False)
+        ])
+        verts = np.vstack([ring, tip[None, :], base_center[None, :]])
+        tip_idx = n_seg
+        base_idx = n_seg + 1
+        side_faces = np.array([
+            [i, (i + 1) % n_seg, tip_idx] for i in range(n_seg)
+        ])
+        cap_faces = np.array([
+            [(i + 1) % n_seg, i, base_idx] for i in range(n_seg)
+        ])
+        faces = np.vstack([side_faces, cap_faces])
+        mesh = gl.GLMeshItem(
+            vertexes=verts, faces=faces, smooth=False, color=color,
+            shader="balloon", glOptions="opaque",
+        )
+        self.view.addItem(mesh)
+        self._gl_items.append(mesh)
 
     def _draw_atom_numbers(self, stage: Stage):
         """Render small index labels next to each atom — toggled via checkbox.

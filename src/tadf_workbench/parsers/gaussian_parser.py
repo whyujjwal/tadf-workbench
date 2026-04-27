@@ -7,6 +7,12 @@ import re
 from ..core import Stage, Molecule
 
 
+# "92 -> 103  -0.10813" / "100 ->102  0.61660" / "50A->54B  0.45" — tolerant.
+_ORBITAL_TRANSITION_RE = re.compile(
+    r"^\s*(\d+)[A-Za-z]?\s*(?:->|<-)\s*(\d+)[A-Za-z]?\s+(-?\d+\.\d+)"
+)
+
+
 class GaussianParser:
     """Parser for Gaussian log files (.log, .out)."""
     
@@ -404,21 +410,30 @@ class GaussianParser:
                     s2_str = [p for p in parts if '<S**2>' in p or 'S**2' in p][0]
                     s_squared = float(s2_str.split('=')[1])
                     
-                    # Parse orbital transitions (next few lines)
+                    # Parse orbital transitions (variable number of lines)
                     orbital_transitions = []
                     j = i + 1
-                    while j < len(self._lines) and j < i + 10:
+                    while j < len(self._lines):
                         trans_line = self._lines[j].strip()
                         if not trans_line or 'Excited State' in trans_line:
                             break
-                        # Parse: 50 -> 54        -0.10260
-                        if '->' in trans_line:
-                            trans_parts = trans_line.split()
+                        # Robust regex — handles all of:
+                        #   "50 -> 54  -0.10260"
+                        #   "50 ->54  -0.10260"
+                        #   "50-> 54  -0.10260"
+                        #   "50->54   -0.10260"
+                        # and single- or double-arrow alpha/beta variants
+                        # like "50A -> 54A  -0.10260" by tolerating a letter
+                        # suffix on the orbital indices.
+                        m = _ORBITAL_TRANSITION_RE.match(trans_line)
+                        if m:
                             try:
-                                from_orb = int(trans_parts[0])
-                                to_orb = int(trans_parts[2])
-                                coeff = float(trans_parts[3])
-                                orbital_transitions.append((from_orb, to_orb, coeff))
+                                from_orb = int(m.group(1))
+                                to_orb = int(m.group(2))
+                                coeff = float(m.group(3))
+                                orbital_transitions.append(
+                                    (from_orb, to_orb, coeff)
+                                )
                             except (ValueError, IndexError):
                                 pass
                         j += 1

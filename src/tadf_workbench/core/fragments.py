@@ -18,10 +18,24 @@ from .stage import Stage
 
 # ── Bond graph ────────────────────────────────────────────────────────────────
 
-def build_adjacency(stage: Stage, tolerance: float = 0.3) -> Dict[int, Set[int]]:
-    """Adjacency dict: atom_index -> set of bonded atom_indices."""
+def build_adjacency(stage: Stage, tolerance: float = 0.3,
+                    *, exclude_hh: bool = True) -> Dict[int, Set[int]]:
+    """Adjacency dict: atom_index -> set of bonded atom_indices.
+
+    `exclude_hh=True` (default) drops any pair of hydrogens. Distance-based
+    bond detection mis-identifies short H…H steric contacts as bonds in
+    crowded geometries (e.g., near-planar donor/acceptor scans where ortho
+    hydrogens stack), which corrupts ring-cycle analysis. Hydrogens never
+    bond to each other in our use case, so dropping H–H pairs is safe and
+    fixes "phantom ring" false-positives without affecting real chemistry.
+    """
     adj: Dict[int, Set[int]] = {i: set() for i in range(stage.atom_count)}
     for i, j in stage.find_bonds(tolerance=tolerance):
+        if exclude_hh and (
+            stage.atoms[i].atomic_number == 1
+            and stage.atoms[j].atomic_number == 1
+        ):
+            continue
         adj[i].add(j)
         adj[j].add(i)
     return adj
