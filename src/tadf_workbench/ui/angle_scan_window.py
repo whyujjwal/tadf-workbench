@@ -5,7 +5,8 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter, QAction,
-    QFileDialog, QInputDialog, QMessageBox, QLabel, QFrame, QSizePolicy,
+    QDockWidget, QFileDialog, QInputDialog, QMessageBox, QLabel, QFrame,
+    QSizePolicy,
 )
 
 from ..core import AngleScan, AnglePoint
@@ -15,6 +16,8 @@ from .angle_scan_plots import GapPlot, TDMPlot, TwoPSquaredPlot
 from .angle_scan_table import AngleScanTable
 from .dihedral_3d_panel import Dihedral3DPanel
 from .donor_acceptor_dialog import DonorAcceptorDialog
+from .jablonski_panel import JablonskiPanel
+from .jablonski_grid_window import JablonskiGridWindow
 
 
 # ── Palette ─────────────────────────────────────────────────────────────────
@@ -202,6 +205,7 @@ class AngleScanWindow(QMainWindow):
             QMenu {{ background: {BG_CARD}; border: 1px solid {BORDER}; }}
             QMenu::item:selected {{ background: #094771; }}
         """)
+        self._jablonski_grid_window: Optional[JablonskiGridWindow] = None
         self._build_ui()
         self._build_menu()
 
@@ -266,6 +270,19 @@ class AngleScanWindow(QMainWindow):
         self.table.setMaximumHeight(210)
         root.addWidget(self.table)
 
+        # 4. Jablonski dock — right edge by default, can be moved
+        self.jablonski_panel = JablonskiPanel()
+        self.jablonski_dock = QDockWidget("Jablonski Diagram", self)
+        self.jablonski_dock.setObjectName("JablonskiDock")
+        self.jablonski_dock.setAllowedAreas(
+            Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea |
+            Qt.BottomDockWidgetArea
+        )
+        self.jablonski_dock.setWidget(self.jablonski_panel)
+        self.jablonski_dock.setMinimumWidth(360)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.jablonski_dock)
+        self.jablonski_dock.hide()  # opt-in via View menu
+
         # Cross-wiring
         self.table.angle_selected.connect(self._on_angle_selected)
         self.viewer_3d.angle_changed.connect(self._on_angle_selected)
@@ -315,6 +332,21 @@ class AngleScanWindow(QMainWindow):
         thr_act.triggered.connect(self._set_threshold)
         scan_menu.addAction(thr_act)
 
+        view_menu = mb.addMenu("&View")
+        self._jablonski_dock_act = QAction("Jablonski Panel", self)
+        self._jablonski_dock_act.setCheckable(True)
+        self._jablonski_dock_act.setChecked(False)
+        self._jablonski_dock_act.toggled.connect(self._toggle_jablonski_dock)
+        view_menu.addAction(self._jablonski_dock_act)
+        # keep menu state in sync if user closes the dock by its 'X' button
+        self.jablonski_dock.visibilityChanged.connect(
+            self._on_jablonski_dock_visibility_changed
+        )
+
+        grid_act = QAction("Jablonski Grid (all angles)…", self)
+        grid_act.triggered.connect(self._open_jablonski_grid)
+        view_menu.addAction(grid_act)
+
     # ── Public API ──
 
     def set_scan(self, scan: AngleScan):
@@ -326,6 +358,15 @@ class AngleScanWindow(QMainWindow):
         self.p2_plot.set_scan(scan)
         self.table.set_scan(scan, threshold_ev=self._threshold)
         self.viewer_3d.set_scan(scan)
+        # Pre-load the Jablonski panel with the first point so it isn't blank
+        if scan.points:
+            self.jablonski_panel.set_point(scan.sorted_points[0])
+        else:
+            self.jablonski_panel.set_point(None)
+        # If the grid window is open, repopulate it for the new scan
+        if self._jablonski_grid_window is not None:
+            self._jablonski_grid_window.close()
+            self._jablonski_grid_window = None
         if not scan.points:
             self.state_card.set_point(None, self._threshold)
             self._refresh_chips()
@@ -469,7 +510,8 @@ class AngleScanWindow(QMainWindow):
         import csv
         from ..analysis import summary_row
         keys = ["angle_deg", "s1_energy_ev", "t1_energy_ev", "gap_ev",
-                "tdm_magnitude", "two_p_squared", "s1_dominant", "source_path"]
+                "tdm_magnitude", "two_p_squared", "s1_dominant", "s1_second",
+                "source_path"]
         with open(path, "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(keys)
@@ -490,9 +532,39 @@ class AngleScanWindow(QMainWindow):
                     self.table.blockSignals(True)
                     self.table.selectRow(row)
                     self.table.blockSignals(False)
+                    self.jablonski_panel.set_point(p)
                     break
         self._refresh_chips()
         self._update_status()
+
+    # ── Jablonski view-menu handlers ──
+
+    def _toggle_jablonski_dock(self, visible: bool):
+        self.jablonski_dock.setVisible(visible)
+
+    def _on_jablonski_dock_visibility_changed(self, visible: bool):
+        # Don't trigger our own toggled handler in a loop.
+        self._jablonski_dock_act.blockSignals(True)
+        self._jablonski_dock_act.setChecked(visible)
+        self._jablonski_dock_act.blockSignals(False)
+
+    def _open_jablonski_grid(self):
+        if not self._scan or not self._scan.points:
+            QMessageBox.information(
+                self, "No Scan",
+                "Load a scan folder first — the grid needs angle points.",
+            )
+            return
+        if self._jablonski_grid_window is None:
+            self._jablonski_grid_window = JablonskiGridWindow(
+                self._scan, parent=self,
+            )
+            self._jablonski_grid_window.angle_picked.connect(
+                self._on_angle_selected
+            )
+        self._jablonski_grid_window.show()
+        self._jablonski_grid_window.raise_()
+        self._jablonski_grid_window.activateWindow()
 
     # ── Rendering helpers ──
 

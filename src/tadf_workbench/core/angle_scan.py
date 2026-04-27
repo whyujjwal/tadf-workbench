@@ -61,9 +61,47 @@ class AnglePoint:
         return max(s1.orbital_transitions, key=lambda t: abs(t[2]))
 
     @property
+    def s1_top2_transitions(self) -> List[Tuple[int, int, float]]:
+        """Top 2 orbital transitions for S₁, ranked by |coefficient| desc."""
+        s1 = self.s1_state
+        if not s1 or not s1.orbital_transitions:
+            return []
+        ordered = sorted(s1.orbital_transitions, key=lambda t: abs(t[2]), reverse=True)
+        return ordered[:2]
+
+    @property
+    def fmax_singlet_state(self) -> Optional[ExcitedState]:
+        """Singlet (any state number) with the highest oscillator strength.
+        Often differs from S₁ — this is the bright state in the Jablonski diagram.
+        """
+        qd = self.molecule.quantum_data
+        if not qd:
+            return None
+        singlets = [s for s in qd.excited_states if s.is_singlet]
+        if not singlets:
+            return None
+        return max(singlets, key=lambda s: s.oscillator_strength)
+
+    @property
+    def fmax_singlet_top2_transitions(self) -> List[Tuple[int, int, float]]:
+        s = self.fmax_singlet_state
+        if not s or not s.orbital_transitions:
+            return []
+        ordered = sorted(s.orbital_transitions, key=lambda t: abs(t[2]), reverse=True)
+        return ordered[:2]
+
+    @property
     def two_p_squared(self) -> float:
         p = self.s1_dominant_coefficient
         return 2.0 * p * p
+
+    @property
+    def two_p_squared_energy_ev2(self) -> float:
+        """User-requested non-standard view: P = S₁ energy in eV → 2·P² in eV²."""
+        s1 = self.s1_state
+        if s1 is None:
+            return 0.0
+        return 2.0 * s1.energy_ev * s1.energy_ev
 
     @property
     def s1_tdm(self) -> Optional[TransitionDipole]:
@@ -157,6 +195,11 @@ class AngleScan:
     @property
     def two_p_squared_values(self) -> List[float]:
         return [p.two_p_squared for p in self.sorted_points]
+
+    @property
+    def two_p_squared_energy_values(self) -> List[float]:
+        """θ-sorted list of 2·E(S₁)² in eV² — the alternative-mode 2·P² curve."""
+        return [p.two_p_squared_energy_ev2 for p in self.sorted_points]
 
     def points_below_threshold(self, threshold_ev: Optional[float] = None) -> List[AnglePoint]:
         t = threshold_ev if threshold_ev is not None else self.threshold_ev

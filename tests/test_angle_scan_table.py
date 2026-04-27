@@ -18,7 +18,7 @@ def test_table_populates_rows(qtbot, scan):
     qtbot.addWidget(t)
     t.set_scan(scan)
     assert t.rowCount() == 3
-    assert t.columnCount() == 7
+    assert t.columnCount() == 8
 
 
 def test_table_highlights_tadf_rows(qtbot, scan):

@@ -6,7 +6,7 @@ from PyQt5.QtGui import QColor, QBrush, QFont
 from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem, QAbstractItemView
 
 from ..core import AngleScan
-from ..analysis import summary_row
+from ..analysis import summary_row, percent_2p2
 
 
 _TADF_BG = QColor(40, 95, 45)
@@ -21,16 +21,17 @@ _COLUMNS = [
     ("ΔE eV", "gap_ev"),
     ("|TDM| Au", "tdm_magnitude"),
     ("2·P²", "two_p_squared"),
-    ("S₁ dominant (i→a, c)", "s1_dominant"),
+    ("S₁ dominant (i→a, %)", "s1_dominant"),
+    ("S₁ 2nd jump (i→a, %)", "s1_second"),
 ]
 
 
 def _fmt(val, key):
     if val is None:
         return "—"
-    if key == "s1_dominant":
+    if key in ("s1_dominant", "s1_second"):
         i, a, c = val
-        return f"{i} → {a}  ({c:+.4f})"
+        return f"{i} → {a}  ({percent_2p2(c):.1f}%)"
     if key == "angle_deg":
         return f"{val:.1f}"
     if isinstance(val, float):
