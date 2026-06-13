@@ -219,7 +219,10 @@ def main() -> None:
             + format_quantum_block(s1_e, t1_e, tdm_for_angle(angle_deg))
         )
         out = OUT_DIR / f"angle_{angle_deg}.log"
-        out.write_text(content)
+        # Explicit UTF-8: the content contains θ/°, which crash on platforms
+        # whose default text encoding isn't UTF-8 (e.g. Windows cp1252). The
+        # parser reads these files as UTF-8, so write them the same way.
+        out.write_text(content, encoding="utf-8")
         gap = s1_e - t1_e
         tag = " TADF" if gap <= 0.2 else ""
         print(f"  wrote {out.name}  ΔE={gap:+.3f} eV{tag}")
