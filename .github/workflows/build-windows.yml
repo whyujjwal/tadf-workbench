@@ -19,6 +19,10 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-latest
+    env:
+      # Force UTF-8 so Unicode in scripts (θ, Δ, ° in the demo generator) doesn't
+      # crash on Windows' default cp1252 console/file encoding.
+      PYTHONUTF8: "1"
 
     steps:
       - name: Checkout
