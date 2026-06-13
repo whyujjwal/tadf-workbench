@@ -61,6 +61,8 @@ QT_QPA_PLATFORM=offscreen pytest tests/ -v
   fragment-detection algorithm, dihedral math.
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — dev environment, running tests,
   adding new metrics or parsers.
+- [docs/BUILD_WINDOWS.md](docs/BUILD_WINDOWS.md) — package a standalone Windows
+  `.exe` (via GitHub Actions or locally on Windows).
 - [docs/plans/2026-04-24-tadf-angle-scan.md](docs/plans/2026-04-24-tadf-angle-scan.md)
   — the original implementation plan.
 

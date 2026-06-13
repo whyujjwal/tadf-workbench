@@ -1,0 +1,62 @@
+name: Build Windows EXE
+
+# Builds a one-folder Windows executable of the TADF Workbench on a Windows
+# runner (PyInstaller can't cross-compile, so this must run on Windows).
+#
+# Triggers:
+#   - push to main          -> build + upload artifact (verifies the build works)
+#   - push a tag like v0.1.0 -> build + attach the zip to a GitHub Release
+#   - "Run workflow" button  -> build on demand (Actions tab)
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # required for the release-on-tag step
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pyinstaller
+
+      - name: Generate bundled demo scan
+        # Demo .log files are gitignored, so regenerate them to ship alongside the app.
+        run: python scripts/generate_demo_scan.py
+
+      - name: Build with PyInstaller
+        run: pyinstaller tadf-workbench.spec --noconfirm
+
+      - name: Stage demo data next to the executable
+        run: Copy-Item -Recurse data/demo_scan dist/TADF-Workbench/demo_scan
+
+      - name: Zip the build
+        run: Compress-Archive -Path dist/TADF-Workbench -DestinationPath TADF-Workbench-windows.zip
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TADF-Workbench-windows
+          path: TADF-Workbench-windows.zip
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: TADF-Workbench-windows.zip
